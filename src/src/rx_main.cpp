@@ -26,6 +26,7 @@
 #include "rx-serial/SerialMavlink.h"
 #include "rx-serial/SerialTramp.h"
 #include "rx-serial/SerialSmartAudio.h"
+#include "rx-serial/SerialJSON.h"
 
 #include "rx-serial/devSerialIO.h"
 #include "devLED.h"
@@ -1314,6 +1315,7 @@ static void setupSerial()
 {
     bool sbusSerialOutput = false;
 	bool sumdSerialOutput = false;
+    bool jsonSerialOutput = config.GetSerialProtocol() == PROTOCOL_JSON;
 #if defined(PLATFORM_ESP8266) || defined(PLATFORM_ESP32)
     bool mavlinkSerialOutput = false;
     bool hottTlmSerial = false;
@@ -1337,7 +1339,7 @@ static void setupSerial()
         serialIO = new SerialNOOP();
         return;
     }
-    if (config.GetSerialProtocol() == PROTOCOL_CRSF || config.GetSerialProtocol() == PROTOCOL_INVERTED_CRSF || firmwareOptions.is_airport)
+    if (config.GetSerialProtocol() == PROTOCOL_CRSF || config.GetSerialProtocol() == PROTOCOL_INVERTED_CRSF || jsonSerialOutput || firmwareOptions.is_airport)
     {
         serialBaud = firmwareOptions.uart_baud;
     }
@@ -1476,6 +1478,10 @@ static void setupSerial()
         serialIO = new SerialHoTT_TLM(SERIAL_PROTOCOL_TX, SERIAL_PROTOCOL_RX);
     }
     #endif
+    else if (jsonSerialOutput)
+    {
+        serialIO = new SerialJSON(SERIAL_PROTOCOL_TX, SERIAL_PROTOCOL_RX);
+    }
     else
     {
         serialIO = new SerialCRSF(SERIAL_PROTOCOL_TX, SERIAL_PROTOCOL_RX);
