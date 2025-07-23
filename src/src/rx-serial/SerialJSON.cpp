@@ -4,30 +4,29 @@
 #include <stdio.h>
 #include <string.h>
 
-GENERIC_CRC8 crsf_crc(CRSF_CRC_POLY);
-
 uint32_t SerialJSON::sendRCFrame(bool frameAvailable, bool frameMissed, uint32_t *channelData)
 {
     if (!frameAvailable)
         return DURATION_IMMEDIATELY;
 
-    writeJSONStart();
-    appendToOutput("\"type\":\"rc_channels\",");
-    appendToOutput("\"timestamp\":");
-    char temp[32];
-    snprintf(temp, sizeof(temp), "%lu,", millis());
-    appendToOutput(temp);
+    DBGVLN("got RC frame");
+    // writeJSONStart();
+    // appendToOutput("\"type\":\"rc_channels\",");
+    // appendToOutput("\"timestamp\":");
+    // char temp[32];
+    // snprintf(temp, sizeof(temp), "%lu,", millis());
+    // appendToOutput(temp);
     
-    appendToOutput("\"channels\":[");
-    for (int i = 0; i < 16; i++) {
-        snprintf(temp, sizeof(temp), "%lu", channelData[i]);
-        appendToOutput(temp);
-        if (i < 15) appendToOutput(",");
-    }
-    appendToOutput("],");
+    // appendToOutput("\"channels\":[");
+    // for (int i = 0; i < 16; i++) {
+    //     snprintf(temp, sizeof(temp), "%lu", channelData[i]);
+    //     appendToOutput(temp);
+    //     if (i < 15) appendToOutput(",");
+    // }
+    // appendToOutput("],");
     
-    writeJSONFieldInt("frame_missed", frameMissed ? 1 : 0, true);
-    writeJSONEnd();
+    // writeJSONFieldInt("frame_missed", frameMissed ? 1 : 0, true);
+    // writeJSONEnd();
     flushOutput();
     
     return DURATION_IMMEDIATELY;
@@ -36,48 +35,123 @@ uint32_t SerialJSON::sendRCFrame(bool frameAvailable, bool frameMissed, uint32_t
 void SerialJSON::queueMSPFrameTransmission(uint8_t* data)
 {
     // For JSON output, we'll immediately convert and send MSP frames
-    writeJSONStart();
-    appendToOutput("\"type\":\"msp_frame\",");
-    appendToOutput("\"timestamp\":");
-    char temp[32];
-    snprintf(temp, sizeof(temp), "%lu,", millis());
-    appendToOutput(temp);
+    // writeJSONStart();
+    // appendToOutput("\"type\":\"msp_frame\",");
+    // appendToOutput("\"timestamp\":");
+    // char temp[32];
+    // snprintf(temp, sizeof(temp), "%lu,", millis());
+    // appendToOutput(temp);
     
-    const uint8_t totalBufferLen = CRSF_FRAME_SIZE(data[1]);
-    appendToOutput("\"length\":");
-    snprintf(temp, sizeof(temp), "%d,", totalBufferLen);
-    appendToOutput(temp);
+    // const uint8_t totalBufferLen = CRSF_FRAME_SIZE(data[1]);
+    // appendToOutput("\"length\":");
+    // snprintf(temp, sizeof(temp), "%d,", totalBufferLen);
+    // appendToOutput(temp);
     
-    appendToOutput("\"data\":[");
-    for (int i = 0; i < totalBufferLen && i < CRSF_FRAME_SIZE_MAX; i++) {
-        snprintf(temp, sizeof(temp), "%d", data[i]);
-        appendToOutput(temp);
-        if (i < totalBufferLen - 1) appendToOutput(",");
-    }
-    appendToOutput("]");
-    writeJSONEnd();
+    // appendToOutput("\"data\":[");
+    // for (int i = 0; i < totalBufferLen && i < CRSF_FRAME_SIZE_MAX; i++) {
+    //     snprintf(temp, sizeof(temp), "%d", data[i]);
+    //     appendToOutput(temp);
+    //     if (i < totalBufferLen - 1) appendToOutput(",");
+    // }
+    // appendToOutput("]");
+    // writeJSONEnd();
     flushOutput();
 }
 
 void SerialJSON::queueLinkStatisticsPacket()
 {
+    // writeJSONStart();
+    // appendToOutput("\"type\":\"link_statistics\",");
+    // appendToOutput("\"timestamp\":");
+    // char temp[32];
+    // snprintf(temp, sizeof(temp), "%lu,", millis());
+    // appendToOutput(temp);
+    
+    // writeJSONFieldInt("uplink_rssi_1", (int32_t)CRSF::LinkStatistics.uplink_RSSI_1);
+    // writeJSONFieldInt("uplink_rssi_2", (int32_t)CRSF::LinkStatistics.uplink_RSSI_2);
+    // writeJSONFieldInt("uplink_quality", (int32_t)CRSF::LinkStatistics.uplink_Link_quality);
+    // writeJSONFieldInt("uplink_snr", (int32_t)CRSF::LinkStatistics.uplink_SNR);
+    // writeJSONFieldInt("active_antenna", (int32_t)CRSF::LinkStatistics.active_antenna);
+    // writeJSONFieldInt("rf_mode", (int32_t)CRSF::LinkStatistics.rf_Mode);
+    // writeJSONFieldInt("uplink_power", (int32_t)CRSF::LinkStatistics.uplink_TX_Power);
+    // writeJSONFieldInt("downlink_rssi", (int32_t)CRSF::LinkStatistics.downlink_RSSI_1);
+    // writeJSONFieldInt("downlink_quality", (int32_t)CRSF::LinkStatistics.downlink_Link_quality);
+    // writeJSONFieldInt("downlink_snr", (int32_t)CRSF::LinkStatistics.downlink_SNR, true);
+    
+    // writeJSONEnd();
+    flushOutput();
+}
+
+void SerialJSON::processRFTelemetryPacket(const uint8_t* telemetryData, uint8_t dataLen)
+{
+    // Process RF telemetry data - this might be fragmented CRSF data
+    // We'll attempt to parse it as individual bytes like serial input
+    logDebugMessage("RF_TLM_START", dataLen, telemetryData ? telemetryData[0] : 0);
+    if (dataLen > 0 && telemetryData != nullptr) {
+        // Process the telemetry chunk byte by byte through our CRSF parser
+        // This will handle fragmented frames and reassemble them
+        for (uint8_t i = 0; i < dataLen; i++) {
+            uint8_t byte = telemetryData[i];
+            
+            // Skip null bytes (padding)
+            if (byte == 0) continue;
+            
+            switch (parseState) {
+                case WAITING_FOR_SYNC:
+                    if (byte == CRSF_SYNC_BYTE || byte == CRSF_ADDRESS_RADIO_TRANSMITTER || 
+                        byte == CRSF_ADDRESS_CRSF_RECEIVER || byte == CRSF_ADDRESS_FLIGHT_CONTROLLER) {
+                        frameBuffer[0] = byte;
+                        framePosition = 1;
+                        parseState = READING_LENGTH;
+                    }
+                    break;
+                    
+                case READING_LENGTH:
+                    if (byte >= CRSF_MAX_PACKET_LEN) {
+                        resetParser();
+                    } else {
+                        frameLength = byte;
+                        frameBuffer[1] = byte;
+                        framePosition = 2;
+                        parseState = READING_FRAME;
+                    }
+                    break;
+                    
+                case READING_FRAME:
+                    frameBuffer[framePosition++] = byte;
+                    if (framePosition >= frameLength + 2) {
+                        // Frame complete, validate CRC and convert
+                        uint8_t crc = 0;
+                        for (int j = 2; j < framePosition - 1; j++) {
+                            crc ^= frameBuffer[j];
+                        }
+                        logDebugMessage("RF_FRAME_CHECK", frameBuffer[2], framePosition);
+                        if (crc == frameBuffer[framePosition - 1]) {
+                            logDebugMessage("RF_FRAME_VALID", frameBuffer[2], framePosition);
+                            convertCRSFToJSON(frameBuffer, framePosition);
+                        } else {
+                            logDebugMessage("RF_FRAME_CRC_BAD", crc, frameBuffer[framePosition - 1]);
+                        }
+                        resetParser();
+                    }
+                    break;
+            }
+        }
+    }
+}
+
+void SerialJSON::logDebugMessage(const char* event, int value1, int value2)
+{
     writeJSONStart();
-    appendToOutput("\"type\":\"link_statistics\",");
+    appendToOutput("\"type\":\"debug\",");
     appendToOutput("\"timestamp\":");
     char temp[32];
     snprintf(temp, sizeof(temp), "%lu,", millis());
     appendToOutput(temp);
     
-    writeJSONFieldInt("uplink_rssi_1", (int32_t)CRSF::LinkStatistics.uplink_RSSI_1);
-    writeJSONFieldInt("uplink_rssi_2", (int32_t)CRSF::LinkStatistics.uplink_RSSI_2);
-    writeJSONFieldInt("uplink_quality", (int32_t)CRSF::LinkStatistics.uplink_Link_quality);
-    writeJSONFieldInt("uplink_snr", (int32_t)CRSF::LinkStatistics.uplink_SNR);
-    writeJSONFieldInt("active_antenna", (int32_t)CRSF::LinkStatistics.active_antenna);
-    writeJSONFieldInt("rf_mode", (int32_t)CRSF::LinkStatistics.rf_Mode);
-    writeJSONFieldInt("uplink_power", (int32_t)CRSF::LinkStatistics.uplink_TX_Power);
-    writeJSONFieldInt("downlink_rssi", (int32_t)CRSF::LinkStatistics.downlink_RSSI_1);
-    writeJSONFieldInt("downlink_quality", (int32_t)CRSF::LinkStatistics.downlink_Link_quality);
-    writeJSONFieldInt("downlink_snr", (int32_t)CRSF::LinkStatistics.downlink_SNR, true);
+    writeJSONFieldString("event", event);
+    writeJSONFieldInt("value1", value1);
+    writeJSONFieldInt("value2", value2, true);
     
     writeJSONEnd();
     flushOutput();

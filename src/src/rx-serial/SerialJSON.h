@@ -11,6 +11,12 @@ public:
     uint32_t sendRCFrame(bool frameAvailable, bool frameMissed, uint32_t *channelData) override;
     void queueMSPFrameTransmission(uint8_t* data) override;
     void queueLinkStatisticsPacket() override;
+    
+    // RF telemetry capture methods
+    void processRFTelemetryPacket(const uint8_t* telemetryData, uint8_t dataLen);
+    
+    // Debug logging method
+    void logDebugMessage(const char* event, int value1, int value2);
 
 private:
     void processBytes(uint8_t *bytes, uint16_t size) override;
@@ -49,8 +55,8 @@ private:
     uint8_t frameLength = 0;
     uint8_t framePosition = 0;
     
-    // Output buffer for JSON strings
-    char outputBuffer[512];
+    // Output buffer for JSON strings (reduced size for stability)
+    char outputBuffer[128];
     uint16_t outputPosition = 0;
     
     void resetParser();
