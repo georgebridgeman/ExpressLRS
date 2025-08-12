@@ -9,7 +9,7 @@ uint32_t SerialJSON::sendRCFrame(bool frameAvailable, bool frameMissed, uint32_t
     if (!frameAvailable)
         return DURATION_IMMEDIATELY;
 
-    DBGVLN("got RC frame");
+    // DBGVLN("got RC frame");
     // writeJSONStart();
     // appendToOutput("\"type\":\"rc_channels\",");
     // appendToOutput("\"timestamp\":");
@@ -27,7 +27,7 @@ uint32_t SerialJSON::sendRCFrame(bool frameAvailable, bool frameMissed, uint32_t
     
     // writeJSONFieldInt("frame_missed", frameMissed ? 1 : 0, true);
     // writeJSONEnd();
-    flushOutput();
+    // flushOutput();
     
     return DURATION_IMMEDIATELY;
 }
@@ -88,13 +88,18 @@ void SerialJSON::processRFTelemetryPacket(const uint8_t* telemetryData, uint8_t 
     // We'll attempt to parse it as individual bytes like serial input
     logDebugMessage("RF_TLM_START", dataLen, telemetryData ? telemetryData[0] : 0);
     if (dataLen > 0 && telemetryData != nullptr) {
+        ParsingState parseState = WAITING_FOR_SYNC;
+        uint8_t frameBuffer[CRSF_MAX_PACKET_LEN];
+        uint8_t frameLength = 0;
+        uint8_t framePosition = 0;
+
         // Process the telemetry chunk byte by byte through our CRSF parser
         // This will handle fragmented frames and reassemble them
         for (uint8_t i = 0; i < dataLen; i++) {
             uint8_t byte = telemetryData[i];
             
             // Skip null bytes (padding)
-            if (byte == 0) continue;
+            // if (byte == 0) continue;
             
             switch (parseState) {
                 case WAITING_FOR_SYNC:
@@ -108,7 +113,8 @@ void SerialJSON::processRFTelemetryPacket(const uint8_t* telemetryData, uint8_t 
                     
                 case READING_LENGTH:
                     if (byte >= CRSF_MAX_PACKET_LEN) {
-                        resetParser();
+                        DBGLN("byte %u >= CRSF_MAX_PACKET_LEN", byte);
+                        return;
                     } else {
                         frameLength = byte;
                         frameBuffer[1] = byte;
@@ -118,22 +124,19 @@ void SerialJSON::processRFTelemetryPacket(const uint8_t* telemetryData, uint8_t 
                     break;
                     
                 case READING_FRAME:
-                    frameBuffer[framePosition++] = byte;
-                    if (framePosition >= frameLength + 2) {
+                    frameBuffer[framePosition] = byte;
+                    if (framePosition == frameLength + 1) { // Reached the CRC byte?
                         // Frame complete, validate CRC and convert
-                        uint8_t crc = 0;
-                        for (int j = 2; j < framePosition - 1; j++) {
-                            crc ^= frameBuffer[j];
-                        }
-                        logDebugMessage("RF_FRAME_CHECK", frameBuffer[2], framePosition);
-                        if (crc == frameBuffer[framePosition - 1]) {
+                        uint8_t crc = crsf_crc.calc(telemetryData + CRSF_FRAME_NOT_COUNTED_BYTES, telemetryData[CRSF_TELEMETRY_LENGTH_INDEX] - CRSF_TELEMETRY_CRC_LENGTH);
+                        logDebugMessage("RF_FRAME_CHECK_FIXED", frameBuffer[2], framePosition);
+                        if (crc == frameBuffer[framePosition]) {
                             logDebugMessage("RF_FRAME_VALID", frameBuffer[2], framePosition);
-                            convertCRSFToJSON(frameBuffer, framePosition);
+                            convertCRSFToJSON(frameBuffer, framePosition + 1);
                         } else {
-                            logDebugMessage("RF_FRAME_CRC_BAD", crc, frameBuffer[framePosition - 1]);
+                            logDebugMessage("RF_FRAME_CRC_BAD", crc, frameBuffer[framePosition]);
                         }
-                        resetParser();
                     }
+                    framePosition++;
                     break;
             }
         }
@@ -159,43 +162,43 @@ void SerialJSON::logDebugMessage(const char* event, int value1, int value2)
 
 void SerialJSON::processBytes(uint8_t *bytes, uint16_t size)
 {
-    for (uint16_t i = 0; i < size; i++) {
-        uint8_t byte = bytes[i];
+    // for (uint16_t i = 0; i < size; i++) {
+    //     uint8_t byte = bytes[i];
         
-        switch (parseState) {
-            case WAITING_FOR_SYNC:
-                if (byte == CRSF_SYNC_BYTE || byte == CRSF_ADDRESS_RADIO_TRANSMITTER || 
-                    byte == CRSF_ADDRESS_CRSF_RECEIVER || byte == CRSF_ADDRESS_FLIGHT_CONTROLLER) {
-                    frameBuffer[0] = byte;
-                    framePosition = 1;
-                    parseState = READING_LENGTH;
-                }
-                break;
+    //     switch (parseState) {
+    //         case WAITING_FOR_SYNC:
+    //             if (byte == CRSF_SYNC_BYTE || byte == CRSF_ADDRESS_RADIO_TRANSMITTER || 
+    //                 byte == CRSF_ADDRESS_CRSF_RECEIVER || byte == CRSF_ADDRESS_FLIGHT_CONTROLLER) {
+    //                 frameBuffer[0] = byte;
+    //                 framePosition = 1;
+    //                 parseState = READING_LENGTH;
+    //             }
+    //             break;
                 
-            case READING_LENGTH:
-                if (byte >= CRSF_MAX_PACKET_LEN) {
-                    resetParser();
-                } else {
-                    frameLength = byte;
-                    frameBuffer[1] = byte;
-                    framePosition = 2;
-                    parseState = READING_FRAME;
-                }
-                break;
+    //         case READING_LENGTH:
+    //             if (byte >= CRSF_MAX_PACKET_LEN) {
+    //                 resetParser();
+    //             } else {
+    //                 frameLength = byte;
+    //                 frameBuffer[1] = byte;
+    //                 framePosition = 2;
+    //                 parseState = READING_FRAME;
+    //             }
+    //             break;
                 
-            case READING_FRAME:
-                frameBuffer[framePosition++] = byte;
-                if (framePosition >= frameLength + 2) {
-                    // Frame complete, validate CRC and convert
-                    uint8_t crc = crsf_crc.calc(&frameBuffer[2], frameLength - 1);
-                    if (crc == frameBuffer[framePosition - 1]) {
-                        convertCRSFToJSON(frameBuffer, framePosition);
-                    }
-                    resetParser();
-                }
-                break;
-        }
-    }
+    //         case READING_FRAME:
+    //             frameBuffer[framePosition++] = byte;
+    //             if (framePosition >= frameLength + 2) {
+    //                 // Frame complete, validate CRC and convert
+    //                 uint8_t crc = crsf_crc.calc(&frameBuffer[2], frameLength - 1);
+    //                 if (crc == frameBuffer[framePosition - 1]) {
+    //                     convertCRSFToJSON(frameBuffer, framePosition);
+    //                 }
+    //                 resetParser();
+    //             }
+    //             break;
+    //     }
+    // }
 }
 
 void SerialJSON::convertCRSFToJSON(uint8_t *crsfData, uint16_t size)
@@ -243,7 +246,9 @@ void SerialJSON::convertCRSFToJSON(uint8_t *crsfData, uint16_t size)
             break;
             
         case CRSF_FRAMETYPE_FLIGHT_MODE:
-            if (size >= sizeof(crsf_header_t) + sizeof(crsf_flight_mode_t) + 1) {
+            // C807214149522A0070
+            // Flight mode is a variable-length null-terminated string, max length of 16 bytes
+            if (size >= sizeof(crsf_header_t)/* + sizeof(crsf_flight_mode_t) + 1*/) {
                 handleFlightModeFrame((const crsf_flight_mode_t*)payload);
             }
             break;
@@ -360,9 +365,11 @@ void SerialJSON::handleBatteryFrame(const crsf_sensor_battery_t* battery)
     snprintf(temp, sizeof(temp), "%lu,", millis());
     appendToOutput(temp);
     
-    writeJSONFieldInt("voltage_mv", (int32_t)(be16toh(battery->voltage) * 100));
-    writeJSONFieldInt("current_ma", (int32_t)(be16toh(battery->current) * 100));
-    writeJSONFieldInt("capacity_mah", (int32_t)((battery->capacity >> 8) | ((battery->capacity & 0xFF) << 16)));
+    writeJSONFieldInt("voltage_mv", (int32_t)(be16toh(battery->voltage)));
+    writeJSONFieldInt("current_ma", (int32_t)(be16toh(battery->current)));
+    // This is buggy, perhaps unnecessary, endian swapping that Claude thought was a good idea. Testing without for now.
+    // writeJSONFieldInt("capacity_mah", (int32_t)((battery->capacity >> 8) | ((battery->capacity & 0xFF) << 16)));
+    writeJSONFieldInt("capacity_mah", (int32_t)battery->capacity);
     writeJSONFieldInt("remaining_percent", (int32_t)battery->remaining, true);
     
     writeJSONEnd();
@@ -634,13 +641,6 @@ void SerialJSON::writeJSONArray(const char* name, uint16_t* values, uint8_t coun
     }
     appendToOutput("]");
     if (!lastField) appendToOutput(",");
-}
-
-void SerialJSON::resetParser()
-{
-    parseState = WAITING_FOR_SYNC;
-    framePosition = 0;
-    frameLength = 0;
 }
 
 void SerialJSON::flushOutput()

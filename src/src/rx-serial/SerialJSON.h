@@ -50,16 +50,10 @@ private:
         READING_FRAME
     };
     
-    ParsingState parseState = WAITING_FOR_SYNC;
-    uint8_t frameBuffer[CRSF_MAX_PACKET_LEN];
-    uint8_t frameLength = 0;
-    uint8_t framePosition = 0;
-    
     // Output buffer for JSON strings (reduced size for stability)
     char outputBuffer[128];
     uint16_t outputPosition = 0;
     
-    void resetParser();
     void flushOutput();
     void appendToOutput(const char* str);
     void appendToOutput(char c);
