@@ -18,6 +18,9 @@
 
 #include "rx-serial/SerialIO.h"
 #include "rx-serial/SerialNOOP.h"
+
+// Compile-time flag for passive telemetry monitoring
+#define PASSIVE_MONITORING_MODE 1
 #include "rx-serial/SerialCRSF.h"
 #include "rx-serial/SerialSBUS.h"
 #include "rx-serial/SerialSUMD.h"
@@ -47,6 +50,11 @@
 #elif defined(PLATFORM_ESP32)
 #include <SPIFFS.h>
 #include "esp_task_wdt.h"
+#endif
+
+#if PASSIVE_MONITORING_MODE
+uint8_t CRSFinBuffer[CRSF_MAX_PACKET_LEN+1];
+StubbornReceiver TelemetryReceiver;
 #endif
 
 //
@@ -394,6 +402,9 @@ void SetRFLinkRate(uint8_t index, bool bindMode) // Set speed of RF link
     OtaUpdateSerializers(smWideOr8ch, ModParams->PayloadLength);
     MspReceiver.setMaxPackageIndex(ELRS_MSP_MAX_PACKAGES);
     TelemetrySender.setMaxPackageIndex(OtaIsFullRes ? ELRS8_TELEMETRY_MAX_PACKAGES : ELRS4_TELEMETRY_MAX_PACKAGES);
+#if PASSIVE_MONITORING_MODE
+    TelemetryReceiver.setMaxPackageIndex(OtaIsFullRes ? ELRS8_TELEMETRY_MAX_PACKAGES : ELRS4_TELEMETRY_MAX_PACKAGES);
+#endif
 
     // Wait for (11/10) 110% of time it takes to cycle through all freqs in FHSS table (in ms)
     cycleInterval = ((uint32_t)11U * FHSSgetChannelCount() * ModParams->FHSShopInterval * interval) / (10U * 1000U);
@@ -476,6 +487,11 @@ void ICACHE_RAM_ATTR LinkStatsToOta(OTA_LinkStats_s * const ls)
 
 bool ICACHE_RAM_ATTR HandleSendTelemetryResponse()
 {
+#if PASSIVE_MONITORING_MODE
+    // Skip telemetry transmission in passive monitoring mode - keep radio in RX
+    return false;
+#endif
+
     uint8_t modresult = (OtaNonce + 1) % ExpressLRS_currTlmDenom;
 
     if ((connectionState == disconnected) || (ExpressLRS_currTlmDenom == 1) || (alreadyTLMresp == true) || (modresult != 0) || !teamraceHasModelMatch)
@@ -1112,6 +1128,49 @@ static bool ICACHE_RAM_ATTR ProcessRfPacket_SYNC(uint32_t const now, OTA_Sync_s 
     return false;
 }
 
+bool ICACHE_RAM_ATTR ProcessRFPacket_TLM(OTA_Packet_s const *const otaPktPtr)
+{
+    if (OtaIsFullRes)
+    {
+        OTA_Packet8_s *const ota8 = (OTA_Packet8_s *const)otaPktPtr;
+        uint8_t *telemPtr;
+        uint8_t dataLen;
+        if (ota8->tlm_dl.containsLinkStats)
+        {
+            telemPtr = ota8->tlm_dl.ul_link_stats.payload;
+            dataLen = sizeof(ota8->tlm_dl.ul_link_stats.payload);
+        }
+        else
+        {
+            telemPtr = ota8->tlm_dl.payload;
+            dataLen = sizeof(ota8->tlm_dl.payload);
+        }
+        DBGLN("pi=%u len=%u", ota8->tlm_dl.packageIndex, dataLen);
+        TelemetryReceiver.ReceiveData(ota8->tlm_dl.packageIndex & ELRS8_TELEMETRY_MAX_PACKAGES, telemPtr, dataLen);
+    }
+    // Std res mode
+    else
+    {
+        uint8_t dataLen;
+        switch (otaPktPtr->std.tlm_dl.type)
+        {
+        case ELRS_TELEMETRY_TYPE_LINK:
+            DBGLN("LINK");
+            break;
+            
+        case ELRS_TELEMETRY_TYPE_DATA:
+            dataLen = sizeof(otaPktPtr->std.tlm_dl.payload);
+            DBGLN("pi=%u piparam=%u len=%u", otaPktPtr->std.tlm_dl.packageIndex, otaPktPtr->std.tlm_dl.packageIndex & ELRS4_TELEMETRY_MAX_PACKAGES, dataLen);
+            TelemetryReceiver.ReceiveData(otaPktPtr->std.tlm_dl.packageIndex & ELRS4_TELEMETRY_MAX_PACKAGES,
+                                          otaPktPtr->std.tlm_dl.payload,
+                                          sizeof(otaPktPtr->std.tlm_dl.payload));
+            break;
+        }
+    }
+
+    return true;
+}
+
 bool ICACHE_RAM_ATTR ProcessRFPacket(SX12xxDriverCommon::rx_status const status)
 {
     if (status != SX12xxDriverCommon::SX12XX_RX_OK)
@@ -1155,10 +1214,10 @@ bool ICACHE_RAM_ATTR ProcessRFPacket(SX12xxDriverCommon::rx_status const status)
             && !InBindingMode;
         break;
     case PACKET_TYPE_TLM:
-        if (firmwareOptions.is_airport)
-        {
-            OtaUnpackAirportData(otaPktPtr, &apOutputBuffer);
-        }
+#if PASSIVE_MONITORING_MODE
+        // In passive monitoring mode, output captured telemetry to serial
+        ProcessRFPacket_TLM(otaPktPtr);
+#endif
         break;
     default:
         break;
@@ -1192,10 +1251,14 @@ bool ICACHE_RAM_ATTR ProcessRFPacket(SX12xxDriverCommon::rx_status const status)
 
 bool ICACHE_RAM_ATTR RXdoneISR(SX12xxDriverCommon::rx_status const status)
 {
+#if !PASSIVE_MONITORING_MODE
+    // Normal receiver mode: prevent multiple packets per period
     if (LQCalc.currentIsSet() && connectionState == connected)
     {
         return false; // Already received a packet, do not run ProcessRFPacket() again.
     }
+#endif
+    // In passive monitoring mode, always try to process packets (control + telemetry)
 
     if (ProcessRFPacket(status))
     {
@@ -1456,6 +1519,9 @@ static void setupSerial()
     Serial.begin(serialBaud, config, GPIO_PIN_RCSIGNAL_RX, GPIO_PIN_RCSIGNAL_TX, invert);
 #endif
 
+#if PASSIVE_MONITORING_MODE
+    serialIO = new SerialJSON(SERIAL_PROTOCOL_TX, SERIAL_PROTOCOL_RX);
+#else
     if (firmwareOptions.is_airport)
     {
         serialIO = new SerialAirPort(SERIAL_PROTOCOL_TX, SERIAL_PROTOCOL_RX);
@@ -1486,6 +1552,7 @@ static void setupSerial()
     {
         serialIO = new SerialCRSF(SERIAL_PROTOCOL_TX, SERIAL_PROTOCOL_RX);
     }
+#endif
 
 #if defined(DEBUG_ENABLED)
 #if defined(PLATFORM_ESP32_S3) || defined(PLATFORM_ESP32_C3)
@@ -2117,6 +2184,10 @@ void setup()
         SerialLogger = new NullStream();
         #endif
 
+#if PASSIVE_MONITORING_MODE
+        TelemetryReceiver.SetDataToReceive(CRSFinBuffer, sizeof(CRSFinBuffer));
+#endif
+
         // External EEPROM needs I2C setup so it can load config
         // but configurable I2C pins for PWM RX needs config loaded first
 #if (defined(TARGET_USE_EEPROM) && defined(USE_I2C))
@@ -2195,6 +2266,31 @@ void loop()
 
     // read and process any data from serial ports, send any queued non-RC data
     handleSerialIO();
+
+#if PASSIVE_MONITORING_MODE
+    if (TelemetryReceiver.HasFinishedData())
+    {
+        // Convert CRSF packet to hex string for debugging
+        char hexString[CRSF_MAX_PACKET_LEN * 2 + 1]; // 2 chars per byte + null terminator
+        char* ptr = hexString;
+        
+        // Get actual CRSF frame length from the packet (byte 1 + 2 for sync/len bytes)
+        uint8_t frameLen = CRSFinBuffer[1] + 2;
+        if (frameLen > CRSF_MAX_PACKET_LEN) frameLen = CRSF_MAX_PACKET_LEN; // Safety check
+        
+        for (int i = 0; i < frameLen; i++) {
+            sprintf(ptr, "%02X", CRSFinBuffer[i]);
+            ptr += 2;
+        }
+        *ptr = '\0'; // Null terminate
+        
+        DBGLN("CRSF Complete (%u bytes): %s", frameLen, hexString);
+        
+        SerialJSON* j = static_cast<SerialJSON*>(serialIO);
+        j->processRFTelemetryPacket(CRSFinBuffer, sizeof(CRSFinBuffer));
+        TelemetryReceiver.Unlock();
+    }
+#endif
 
 #if defined(PLATFORM_ESP8266) || defined(PLATFORM_ESP32)
     // If the reboot time is set and the current time is past the reboot time then reboot.
